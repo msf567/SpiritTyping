@@ -13,7 +13,7 @@ namespace SpiritTyping
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new SpiritTypingForm());
+            Application.Run(new SpiritTypingRecorderForm());
         }
     }
 }
