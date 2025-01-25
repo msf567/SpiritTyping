@@ -1,28 +1,15 @@
 using System;
-using System.Collections.Generic;
-using System.Collections.Specialized;
-using System.Data;
-using System.Diagnostics;
+
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
-using System.Threading;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Bson;
 
 namespace SpiritTyping
 {
     public class SpiritTypingProcessor : IDisposable
     {
-        private bool _playing;
-
-        public bool IsPlaying
-        {
-            get { return _playing; }
-        }
-
         private bool _recording;
 
         public bool IsRecording
@@ -30,28 +17,16 @@ namespace SpiritTyping
             get { return _recording; }
         }
 
-        public STScript CurrentScript = new STScript();
+        private STScript ScriptInProgress = new STScript();
 
         //recording
-        private DateTime commandStartedTime;
-
-        //playback
-        private Thread PlaybackThread;
-        private double playbackCountMS;
-        private int PlaybackIndex;
-        public bool Verbose;
-        private bool commandLock = false;
-        private bool wasLocked = false;
-
-        public delegate void NewCommandCallback(STFullCommand command, int index);
-
-        public NewCommandCallback OnNewCommand;
-
+        private DateTime RecordingStartTime;
+        
         public void SaveCommands(string filePath)
         {
-            FinishCurrentKeyboardCommand();
-
-            var jsonData = JsonConvert.SerializeObject(CurrentScript, Formatting.None);
+            ScriptInProgress.FilePath = filePath;
+            ScriptInProgress.Name = filePath.Split('.')[0];
+            var jsonData = JsonConvert.SerializeObject(ScriptInProgress, Formatting.None);
 
             var uncompressedBytes = Encoding.UTF8.GetBytes(jsonData);
 
@@ -63,77 +38,24 @@ namespace SpiritTyping
                 }
 
                 File.WriteAllBytes(filePath, compressedStream.ToArray());
-                Console.WriteLine($@"Saved {CurrentScript.Commands.Count} commands");
+                Console.WriteLine($@"Saved {ScriptInProgress.Commands.Count} commands");
             }
 
-            CurrentScript.Commands.Clear();
+            ScriptInProgress.Commands.Clear();
         }
-
-        public void LoadCommands(string scriptName, string folderPath)
-        {
-            if (!Directory.Exists(folderPath))
-                Directory.CreateDirectory(folderPath);
-            string filePath = Path.Combine(folderPath, scriptName + ".spirit");
-            //Console.WriteLine("Loading " + filePath);
-            if (!File.Exists(filePath))
-            {
-                Console.WriteLine("doesn't exist");
-                return;
-            }
-
-            byte[] compressedData = File.ReadAllBytes(filePath);
-
-            using (var compressedStream = new MemoryStream(compressedData))
-            using (var gzipStream = new GZipStream(compressedStream, CompressionMode.Decompress))
-            using (var memoryStream = new MemoryStream())
-            {
-                gzipStream.CopyTo(memoryStream);
-
-                var decompressedBytes = memoryStream.ToArray();
-                var jsonData = Encoding.UTF8.GetString(decompressedBytes);
-
-                CurrentScript = JsonConvert.DeserializeObject<STScript>(jsonData);
-
-                foreach (var command in CurrentScript.Commands)
-                {
-                    //Console.WriteLine($@"Loaded {command.Text} {command.CursorPos} {command.HighlightLength} {command.DelayMS}ms");
-                }
-            }
-
-            //Console.WriteLine($@"Loaded {CurrentScript.Commands.Count} commands");
-            PlaybackIndex = 0;
-        }
-
-        public void StartRecording()
+        
+        public void StartRecording(string initialText, int initialCursorPos, int initialHighlightLength, int iHx,
+            int iHy)
         {
             _recording = true;
-            _playing = false;
-            CurrentScript = new STScript();
+            ScriptInProgress = new STScript();
+            RecordingStartTime = DateTime.Now;
+            RecordCommand(initialText, initialCursorPos, initialHighlightLength, iHx, iHy);
         }
 
         public void StopRecording()
         {
-            FinishCurrentKeyboardCommand();
             _recording = false;
-        }
-
-        public void StartPlayback()
-        {
-            _recording = false;
-            _playing = true;
-            playbackCountMS = 0;
-
-            ExecuteCommand(CurrentScript.Commands[PlaybackIndex], PlaybackIndex);
-            PlaybackIndex++;
-            PlaybackThread?.Abort();
-            PlaybackThread = new Thread(Playback);
-            PlaybackThread.Start();
-        }
-
-        public void PausePlayback()
-        {
-            _playing = false;
-            PlaybackThread?.Abort();
         }
 
         public void RecordCommand(string text, int cursorPos, int highlightLength, int Hx = 0, int Hy = 0)
@@ -141,115 +63,37 @@ namespace SpiritTyping
             if (!_recording)
                 return;
 
-            if (CurrentScript.Commands.Count > 0)
-                FinishCurrentKeyboardCommand();
-            commandStartedTime = DateTime.Now;
-
-            var newCommand = new STFullCommand(text, cursorPos,
+            var newCommand = new SpiritTypingState(text, cursorPos,
                 highlightLength, Hx, Hy);
-
-            if (CurrentScript.Commands.Count == 0)
-                newCommand.Change = GetCommandDelta(new STFullCommand("", 0, 0), newCommand);
+            //TODO keep a total pause time to enable pausing during recording for crazy moves
+            newCommand.Time = (DateTime.Now - RecordingStartTime).TotalMilliseconds; 
+            
+            if (ScriptInProgress.Commands.Count == 0)
+                newCommand.Change = GetCommandDelta(new SpiritTypingState("", 0, 0), newCommand);
             else
-                newCommand.Change = GetCommandDelta(CurrentScript.Commands.Last(), newCommand);
+                newCommand.Change = GetCommandDelta(ScriptInProgress.Commands.Last(), newCommand);
 
-            CurrentScript.Commands.Add(newCommand);
-            Console.WriteLine($@"Recording {text} {cursorPos} {highlightLength} {newCommand.Change}");
+            ScriptInProgress.Commands.Add(newCommand);
+            Console.WriteLine(
+                $@"Recording {text} {cursorPos} {highlightLength} {newCommand.Change} at {newCommand.Time}");
         }
 
-        public void ModifyCommand(int index, string text, int cursorPos, int highlightLength, int delayMS,
-            bool commandPause)
+        public void ModifyCommand(int index, string text, int cursorPos, int highlightLength, int time)
         {
-            if (index >= CurrentScript.Commands.Count)
+            if (index >= ScriptInProgress.Commands.Count)
                 return;
 
-            CurrentScript.Commands[index].Text = text;
-            CurrentScript.Commands[index].CursorPos = cursorPos;
-            CurrentScript.Commands[index].HighlightLength = highlightLength;
-            CurrentScript.Commands[index].DelayMS = delayMS;
-            CurrentScript.Commands[index].WaitForCommand = commandPause;
-        }
-
-        public void UnlockCommand()
-        {
-            commandLock = false;
-        }
-
-        private void FinishCurrentKeyboardCommand()
-        {
-            if (CurrentScript.Commands.Count == 0)
-            {
-                Console.WriteLine("Tried to end a command when one was not in progress.");
-                return;
-            }
-
-            TimeSpan delayTime = DateTime.Now - commandStartedTime;
-            CurrentScript.Commands.Last().DelayMS = (int)delayTime.TotalMilliseconds;
-            Console.WriteLine($@"Recorded at {delayTime.TotalMilliseconds} time.");
-        }
-
-        public void SkipToCommand(int index)
-        {
-            if (index >= CurrentScript.Commands.Count || index < 0)
-                return;
-            PlaybackIndex = index;
-            ExecuteCommand(CurrentScript.Commands[index], index);
-        }
-
-        private void ExecuteCommand(STFullCommand c, int index)
-        {
-            OnNewCommand?.Invoke(c, index);
-        }
-
-        private void Playback()
-        {
-            Stopwatch stopwatch = new Stopwatch();
-            stopwatch.Start();
-            while (_playing)
-            {
-                if (PlaybackIndex >= CurrentScript.Commands.Count)
-                {
-                    _playing = false;
-                    //Console.WriteLine("Finished playback!");
-                    return;
-                }
-
-                long elapsedMilliseconds = stopwatch.ElapsedMilliseconds;
-                stopwatch.Restart();
-
-                playbackCountMS += elapsedMilliseconds;
-                if (Verbose)
-                    Console.WriteLine(CurrentScript.Commands[PlaybackIndex].Text + " -- " + playbackCountMS + " vs " +
-                                      CurrentScript.Commands[PlaybackIndex].DelayMS);
-                bool waitingForCommandLock = commandLock && CurrentScript.Commands[PlaybackIndex].WaitForCommand;
-                if (wasLocked && !waitingForCommandLock)
-                {
-                    playbackCountMS = 0;
-                    //Console.WriteLine("Restarting stopwatch");
-                    stopwatch.Restart();
-                }
-
-                wasLocked = waitingForCommandLock;
-                int target = PlaybackIndex == 0 ? 0 : CurrentScript.Commands[PlaybackIndex - 1].DelayMS;
-                if (playbackCountMS >= target && !waitingForCommandLock)
-                {
-                    commandLock = true;
-                    playbackCountMS -= CurrentScript.Commands[PlaybackIndex].DelayMS;
-                    ExecuteCommand(CurrentScript.Commands[PlaybackIndex], PlaybackIndex);
-                    PlaybackIndex++;
-                }
-
-                Thread.Sleep(10);
-            }
+            ScriptInProgress.Commands[index].Text = text;
+            ScriptInProgress.Commands[index].CursorPos = cursorPos;
+            ScriptInProgress.Commands[index].HighlightLength = highlightLength;
+            ScriptInProgress.Commands[index].Time = time;
         }
 
         public void Dispose()
         {
-            PlaybackThread?.Abort();
-            _playing = false;
         }
 
-        public string GetCommandDelta(STFullCommand lastCommand, STFullCommand newCommand)
+        public string GetCommandDelta(SpiritTypingState lastCommand, SpiritTypingState newCommand)
         {
             if (lastCommand.Text != newCommand.Text)
             {
@@ -310,7 +154,7 @@ namespace SpiritTyping
         public void ReplaceTextInCommands(string findString, string replaceString)
         {
             if (findString != "")
-                foreach (var command in CurrentScript.Commands)
+                foreach (var command in ScriptInProgress.Commands)
                 {
                     command.Text = command.Text.Replace(findString, replaceString);
                 }
@@ -320,11 +164,12 @@ namespace SpiritTyping
 
         private void RefreshCommandDeltas()
         {
-            CurrentScript.Commands[0].Change = GetCommandDelta(new STFullCommand("", 0, 0), CurrentScript.Commands[0]);
-            for (int x = 1; x < CurrentScript.Commands.Count; x++)
+            ScriptInProgress.Commands[0].Change =
+                GetCommandDelta(new SpiritTypingState("", 0, 0), ScriptInProgress.Commands[0]);
+            for (int x = 1; x < ScriptInProgress.Commands.Count; x++)
             {
-                CurrentScript.Commands[x].Change =
-                    GetCommandDelta(CurrentScript.Commands[x - 1], CurrentScript.Commands[x]);
+                ScriptInProgress.Commands[x].Change =
+                    GetCommandDelta(ScriptInProgress.Commands[x - 1], ScriptInProgress.Commands[x]);
             }
         }
     }

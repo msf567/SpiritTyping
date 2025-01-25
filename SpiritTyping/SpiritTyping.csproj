@@ -57,5 +57,7 @@
     <Target Name="AfterBuild">
     </Target>
     -->
-
+    <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+        <Exec Command="xcopy /y /i &quot;$(TargetPath)&quot; &quot;Q:\Snow\Assets\Plugins&quot;" />
+    </Target>
 </Project>

@@ -1,21 +1,29 @@
 ﻿using System;
+using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 
 #pragma warning disable CS0169 // Field is never used
-
 namespace SpiritTyping
 {
     public partial class SpiritTypingRecorderForm : Form
     {
         private string lastText;
         private SpiritTypingProcessor processor = new();
+        private int PlaybackCount = 0;
 
+        private SpiritTypingState currentState;
+        private STScript LoadedScript;
+
+        private bool playing = false;
+        
         public SpiritTypingRecorderForm()
         {
             InitializeComponent();
-            processor.OnNewCommand += ExecuteCommand;
+            //processor.OnNewCommand += ExecuteCommand;
             ReloadScriptLibrary();
+
         }
 
         private void TextEntryWindow_TextChanged(object sender, EventArgs e)
@@ -25,9 +33,9 @@ namespace SpiritTyping
 
             var res = GetHighlightEndPosition(TextEntryWindow.Text, TextEntryWindow.SelectionStart,
                 TextEntryWindow.SelectionLength);
-            
+
             processor.RecordCommand(TextEntryWindow.Text, TextEntryWindow.SelectionStart,
-                TextEntryWindow.SelectionLength,res.x,res.y);
+                TextEntryWindow.SelectionLength, res.x, res.y);
             lastText = TextEntryWindow.Text;
         }
 
@@ -38,7 +46,7 @@ namespace SpiritTyping
 
             var res = GetHighlightEndPosition(TextEntryWindow.Text, TextEntryWindow.SelectionStart,
                 TextEntryWindow.SelectionLength);
-            
+
             processor.RecordCommand(TextEntryWindow.Text, TextEntryWindow.SelectionStart,
                 TextEntryWindow.SelectionLength, res.x, res.y);
         }
@@ -64,16 +72,15 @@ namespace SpiritTyping
 
             return (x, y);
         }
-        
-        private void ExecuteCommand(STFullCommand c, int index)
+
+        private void ExecuteCommand(SpiritTypingState c)
         {
             UpdateTextControl(c.Text, c.CursorPos, c.HighlightLength);
-            SetTrackbarIndex(index);
-            SetSelectedCommandInList(index);
-            SetDelayBox(c.DelayMS);
+            //SetTrackbarIndex(index);
+            //SetSelectedCommandInList(index);
+            SetDelayBox(c.Time);
             SetHighlightBox(c.HighlightLength);
             SetCursorPosBox(c.CursorPos);
-            SetCommandToggle(c.WaitForCommand);
         }
 
         private void UpdateTextControl(string text, int cursorPos, int highlightLength)
@@ -82,7 +89,7 @@ namespace SpiritTyping
             {
                 TextEntryWindow.Invoke(new Action(() =>
                 {
-                    TextEntryWindow.Focus();
+                    //TextEntryWindow.Focus();
                     TextEntryWindow.Text = text;
                     TextEntryWindow.SelectionStart = cursorPos;
                     TextEntryWindow.SelectionLength = highlightLength;
@@ -90,7 +97,7 @@ namespace SpiritTyping
             }
             else
             {
-                TextEntryWindow.Focus();
+                //TextEntryWindow.Focus();
                 TextEntryWindow.Text = text;
                 TextEntryWindow.SelectionStart = cursorPos;
                 TextEntryWindow.SelectionLength = highlightLength;
@@ -108,23 +115,36 @@ namespace SpiritTyping
 
         private void PlayButton_Click(object sender, EventArgs e)
         {
-            Console.WriteLine("button pressed");
-            if (processor.CurrentScript.Commands.Count == 0)
+            if (LoadedScript == null || LoadedScript.Commands.Count == 0)
                 return;
 
-            if (processor.IsPlaying)
+            if (playing)
             {
                 Console.WriteLine(@"Trying to pause");
-                processor.PausePlayback();
+                PausePlayback();
             }
             else
             {
                 Console.WriteLine(@"Trying to play");
-                processor.StartPlayback();
+                StartPlayback();
             }
 
-            PlayButton.Text = processor.IsPlaying ? "Pause" : "Play";
+            PlayButton.Text = playing ? "Pause" : "Play";
             Text = @"SpiritTypingRecorder" + (processor.IsRecording ? " [RECORDING]" : "");
+        }
+
+        private void StartPlayback()
+        {
+            TextEntryWindow.Focus();
+            PlaybackCount = PlaybackBar.Value;
+            playing = true;
+            PlaybackTimer.Start();
+        }
+
+        private void PausePlayback()
+        {
+            playing = false;
+            PlaybackTimer.Stop();
         }
 
         private void RecordButton_Click(object sender, EventArgs e)
@@ -135,7 +155,10 @@ namespace SpiritTyping
             }
             else
             {
-                processor.StartRecording();
+                var res = GetHighlightEndPosition(TextEntryWindow.Text, TextEntryWindow.SelectionStart,
+                    TextEntryWindow.SelectionLength);
+                processor.StartRecording(TextEntryWindow.Text, TextEntryWindow.SelectionStart,
+                    TextEntryWindow.SelectionLength, res.x, res.y);
                 TextEntryWindow.Focus();
             }
 
@@ -176,14 +199,32 @@ namespace SpiritTyping
                     ?.ToString(); // Assuming script names are in column 1
                 if (!string.IsNullOrEmpty(name))
                 {
-                    processor.LoadCommands(name.Split('.')[0], "Q:\\Snow\\Builds\\SpiritScripts");
-                    LoadedScriptLabel.Text = processor.CurrentScript.Name;
-                    DurationLabel.Text = processor.CurrentScript.Duration.ToString(@"mm\:ss\:fff");
-                    Text = @"SpiritTypingRecorder" + (processor.IsRecording ? " [RECORDING]" : "");
-                    DisplayCommandList();
-                    processor.SkipToCommand(0);
+                    LoadScript(name, true);
                 }
             }
+        }
+
+        private void LoadScript(string name, bool ResetTime)
+        {
+            LoadedScript = STScript.Load(name.Split('.')[0], "Q:\\Snow\\Builds\\SpiritScripts");
+            if (LoadedScript == null)
+                return;
+
+            LoadedScriptLabel.Text = LoadedScript.Name;
+            DurationLabel.Text = LoadedScript.Duration.ToString(@"mm\:ss\:fff");
+            Text = @"SpiritTypingRecorder" + (processor.IsRecording ? " [RECORDING]" : "");
+            DisplayCommandList();
+            if (ResetTime)
+            {
+                ExecuteCommand(LoadedScript.Resolve(0));
+            }
+            else
+            {
+                int index = LoadedScript.GetCurrentIndex(PlaybackBar.Value);
+                ExecuteCommand(LoadedScript.Resolve(PlaybackBar.Value));
+            }
+
+            ScriptViewPanel.Refresh();
         }
 
         private void InitializeCommandList()
@@ -204,7 +245,7 @@ namespace SpiritTyping
             if (e.RowIndex >= 0 && e.ColumnIndex == CommandListView.Columns["Commands"].Index)
             {
                 int rowIndex = e.RowIndex;
-                processor.SkipToCommand(rowIndex);
+                ExecuteCommand(LoadedScript.Commands[e.RowIndex]);
             }
         }
 
@@ -213,13 +254,14 @@ namespace SpiritTyping
             if (CommandListView.Columns.Count == 0)
                 InitializeCommandList();
             CommandListView.Rows.Clear();
-            foreach (var command in processor.CurrentScript.Commands)
+            foreach (var command in LoadedScript.Commands)
             {
                 CommandListView.Rows.Add(command.Change);
             }
 
             PlaybackBar.Minimum = 0;
-            PlaybackBar.Maximum = processor.CurrentScript.Commands.Count - 1;
+            PlaybackBar.TickFrequency = 1000;
+            PlaybackBar.Maximum = (int)LoadedScript.Duration.TotalMilliseconds;
         }
 
         private void SetTrackbarIndex(int index)
@@ -249,7 +291,7 @@ namespace SpiritTyping
             }
         }
 
-        private void SetDelayBox(int delayMS)
+        private void SetDelayBox(double delayMS)
         {
             if (DelayTextBox.InvokeRequired)
             {
@@ -288,40 +330,29 @@ namespace SpiritTyping
             }
         }
 
-        private void SetCommandToggle(bool enabled)
-        {
-            if (CommandPauseToggle.InvokeRequired)
-            {
-                CommandPauseToggle.Invoke(new Action(() => { CommandPauseToggle.Checked = enabled; }));
-            }
-            else
-            {
-                CommandPauseToggle.Checked = enabled;
-            }
-        }
-
         private void PlaybackBar_Scroll(object sender, EventArgs e)
         {
-            if (processor.CurrentScript.Commands.Count == 0)
+            if (LoadedScript.Commands.Count == 0)
                 return;
-            processor.PausePlayback();
+            TextEntryWindow.Focus();
+            PausePlayback();
             PlayButton.Text = "Play";
-            processor.SkipToCommand(PlaybackBar.Value);
+            var command = LoadedScript.Resolve(PlaybackBar.Value);
+            ExecuteCommand(command);
+            //processor.SkipToCommand(PlaybackBar.Value);
         }
 
         private void BackButton_Click(object sender, EventArgs e)
         {
-            processor.SkipToCommand(PlaybackBar.Value - 1);
         }
 
         private void ForwardButton_Click(object sender, EventArgs e)
         {
-            processor.SkipToCommand(PlaybackBar.Value + 1);
         }
 
         private void WriteButton_Click(object sender, EventArgs e)
         {
-            var currentCommand = processor.CurrentScript.Commands[PlaybackBar.Value];
+            var currentCommand = LoadedScript.Commands[PlaybackBar.Value];
             int newDelayMS;
             if (int.TryParse(DelayTextBox.Text, out newDelayMS))
             {
@@ -329,8 +360,7 @@ namespace SpiritTyping
                     currentCommand.Text,
                     currentCommand.CursorPos,
                     currentCommand.HighlightLength,
-                    newDelayMS,
-                    CommandPauseToggle.Checked);
+                    newDelayMS);
             }
         }
 
@@ -338,12 +368,70 @@ namespace SpiritTyping
         {
             processor.ReplaceTextInCommands(OldTextBox.Text, ReplaceTextBox.Text);
             DisplayCommandList();
-            processor.SkipToCommand(PlaybackBar.Value);
+            ExecuteCommand(LoadedScript.Resolve(PlaybackBar.Value));
         }
 
-        private void CommandButton_Click(object sender, EventArgs e)
+        private void PlaybackTimerTick(object sender, EventArgs e)
         {
-            processor.UnlockCommand();
+            PlaybackCount += 10;
+            if (PlaybackCount >= LoadedScript.Duration.TotalMilliseconds)
+            {
+                ExecuteCommand(LoadedScript.Commands.Last());
+
+                PausePlayback();
+                return;
+            }
+
+            SetTrackbarIndex(PlaybackCount);
+            ExecuteCommand(LoadedScript.Resolve(PlaybackBar.Value));
         }
+
+        private void ScriptViewPanel_Paint(object sender, PaintEventArgs e)
+        {
+            if (LoadedScript == null)
+            {
+                Console.WriteLine("returning");
+                return;
+            }
+
+            int w = ScriptViewPanel.Width;
+            int h = ScriptViewPanel.Height;
+            Graphics g = e.Graphics;
+            foreach (var c in LoadedScript.Commands)
+            {
+                double normalized = c.Time / LoadedScript.Duration.TotalMilliseconds;
+                int xPos = (int)(w * normalized);
+                g.DrawLine(Pens.Red, xPos, h / 2, xPos, h);
+            }
+        }
+
+        private void BumpBackEarlierButton_Click(object sender, EventArgs e)
+        {
+            LoadedScript.BumpTimings(LoadedScript.GetCurrentIndex(PlaybackBar.Value), -50, true);
+            LoadedScript.Save();
+            LoadScript(LoadedScript.Name, false);
+        }
+
+        private void BumpForwardsEarlierButton_Click(object sender, EventArgs e)
+        {
+            LoadedScript.BumpTimings(LoadedScript.GetCurrentIndex(PlaybackBar.Value), 50, true);
+            LoadedScript.Save();
+            LoadScript(LoadedScript.Name, false);
+        }
+
+        private void BumpBackLaterButton_Click(object sender, EventArgs e)
+        {
+            LoadedScript.BumpTimings(LoadedScript.GetCurrentIndex(PlaybackBar.Value), -50, false);
+            LoadedScript.Save();
+            LoadScript(LoadedScript.Name, false);
+        }
+
+        private void BumpForwardsLaterButton_Click(object sender, EventArgs e)
+        {
+            LoadedScript.BumpTimings(LoadedScript.GetCurrentIndex(PlaybackBar.Value), 50, false);
+            LoadedScript.Save();
+            LoadScript(LoadedScript.Name, false);
+        }
+
     }
 }

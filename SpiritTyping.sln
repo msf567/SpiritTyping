@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SpiritTypingForms", "SpiritTypingForms\SpiritTypingForms.csproj", "{5DA6E169-C4C7-4CB5-9350-CA6A6B6E4784}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SpiritTypingRecorder", "SpiritTypingRecorder\SpiritTypingRecorder.csproj", "{5DA6E169-C4C7-4CB5-9350-CA6A6B6E4784}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SpiritTyping", "SpiritTyping\SpiritTyping.csproj", "{6DF53673-99E5-45A9-80F1-2CC3F5336079}"
 EndProject
